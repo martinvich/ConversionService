@@ -1,0 +1,98 @@
+### Convert USD to EUR — current timestamp
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 123456, "selectionId": 987654, "odds": 2.2, "stake": 253.67, "currency": "USD", "date": "{{$isoTimestamp}}"}
+
+### Convert GBP to EUR
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 100, "selectionId": 200, "odds": 1.85, "stake": 500.00, "currency": "GBP", "date": "{{$isoTimestamp}}"}
+
+### EUR to EUR — no conversion needed
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 111, "selectionId": 222, "odds": 3.0, "stake": 100.50, "currency": "EUR", "date": "{{$isoTimestamp}}"}
+
+### Weekend date (Saturday 2024-11-30) — should normalize to Friday
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 300, "selectionId": 400, "odds": 1.5, "stake": 200.00, "currency": "USD", "date": "2024-11-30T12:00:00Z"}
+
+### Weekend date (Sunday 2024-12-01) — should return same rate as Saturday
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 300, "selectionId": 400, "odds": 1.5, "stake": 200.00, "currency": "USD", "date": "2024-12-01T08:00:00Z"}
+
+### Negative stake — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": -50, "currency": "USD", "date": "{{$isoTimestamp}}"}
+
+### Zero stake — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": 0, "currency": "USD", "date": "{{$isoTimestamp}}"}
+
+### Future date — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": 100, "currency": "USD", "date": "2099-01-01T00:00:00Z"}
+
+### Empty currency — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": 100, "currency": " ", "date": "{{$isoTimestamp}}"}
+
+### Unknown currency code — expect 500 (providers won't find rate)
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": 100, "currency": "XYZ", "date": "2024-12-02T10:00:00Z"}
+
+### Invalid date format — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": 100, "currency": "USD", "date": "not-a-date"}
+
+### Missing required field (no stake) — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "currency": "USD", "date": "{{$isoTimestamp}}"}
+
+### Empty body — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{}
+
+### Malformed JSON — expect 400
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: application/json
+
+{"marketId": "not-a-number"}
+
+### Wrong content type — expect 415
+POST http://localhost:8080/api/v1/conversion/trade
+Content-Type: text/plain
+
+{"marketId": 1, "selectionId": 2, "odds": 2.0, "stake": 100, "currency": "USD", "date": "{{$isoTimestamp}}"}
+
+### Wrong HTTP method — expect 405
+GET http://localhost:8080/api/v1/conversion/trade
+
+### Non-existent endpoint — expect 404
+POST http://localhost:8080/api/v1/nonexistent
+Content-Type: application/json
+
+{"marketId": 1}

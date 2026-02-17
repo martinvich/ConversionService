@@ -1,0 +1,281 @@
+openapi: 3.0.3
+info:
+  title: Trade Conversion Service
+  description: |
+    Converts trade stakes from a source currency to EUR using live exchange rates
+    from external FX providers (Czech National Bank primary, ExchangeRate-Host fallback).
+
+    ## Behavior Rules
+
+    ### Currency Handling
+    - The target currency is always **EUR**.
+    - Source currency is normalized to uppercase (e.g., `usd` → `USD`).
+    - If the source currency is already EUR, no FX lookup is performed and the stake is returned unchanged.
+
+    ### Date Handling
+    - The `date` field is an ISO-8601 instant interpreted in **UTC** to derive the business day.
+    - Dates in the future (relative to UTC "today") are rejected with HTTP 400.
+    - **Weekend adjustment:** FX spot markets and central bank fixings operate on business days only.
+      Saturday dates are adjusted to the preceding Friday; Sunday dates are adjusted to the preceding Friday.
+      The original `date` value is preserved in the response — only the internal FX lookup uses the adjusted date.
+
+    ### Stake Conversion
+    - Converted stake = `original stake × exchange rate`.
+    - Rounding: `HALF_UP` to **2 decimal places**.
+
+    ### FX Provider Failover
+    - Primary provider: Czech National Bank (CNB) — covers ~30 major currencies.
+    - Fallback provider: ExchangeRate-Host — broader currency coverage.
+    - Failover triggers on provider infrastructure failures (timeouts, HTTP errors, network issues).
+    - Rates are cached with a 2-hour TTL. Concurrent requests for the same currency pair and date
+      are deduplicated (single upstream fetch).
+
+    ### Operational Notes
+    - The fallback provider (ExchangeRate-Host) requires a configured `access-key`
+      in `application.conf` (`app.providers.exchangerate-host.access-key`).
+      If the key is missing or empty, failover requests to this provider will fail
+      with authentication errors, effectively disabling the fallback safety net.
+
+    ### Error Contract
+    Every error response uses the `ApiError` schema with a stable machine-readable `code`
+    and a human-readable `message`. Clients should switch on `code` for programmatic handling
+    and display `message` to users. The set of codes is:
+
+    | Code | HTTP Status | Meaning |
+    |------|-------------|---------|
+    | `MALFORMED_BODY` | 400 | Request JSON could not be parsed or is missing required fields. |
+    | `INVALID_REQUEST` | 400 | Request parsed but failed validation (negative stake, future date, empty currency). |
+    | `RATE_UNAVAILABLE` | 500 | All FX providers failed to return a rate. Retry with backoff. |
+    | `INTERNAL_ERROR` | 500 | Unexpected server error. |
+  version: 1.0.0
+
+tags:
+  - name: trade
+    description: Trade stake conversion operations.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  /api/v1/conversion/trade:
+    post:
+      operationId: convertTrade
+      tags:
+        - trade
+      summary: Convert a trade stake to EUR
+      description: |
+        Accepts a trade payload with a stake in a source currency and returns
+        the same payload with the stake converted to EUR.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TradeRequest'
+            examples:
+              usd-trade:
+                summary: USD trade
+                value:
+                  marketId: 123456
+                  selectionId: 987654
+                  odds: 2.2
+                  stake: 253.67
+                  currency: "USD"
+                  date: "2025-01-14T21:32:42.324Z"
+              eur-passthrough:
+                summary: EUR trade (no conversion)
+                value:
+                  marketId: 100
+                  selectionId: 200
+                  odds: 1.5
+                  stake: 50.00
+                  currency: "EUR"
+                  date: "2025-01-14T10:00:00Z"
+      responses:
+        '200':
+          description: Trade successfully converted to EUR.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TradeResponse'
+              examples:
+                converted:
+                  summary: USD stake converted to EUR
+                  value:
+                    marketId: 123456
+                    selectionId: 987654
+                    odds: 2.2
+                    stake: 202.94
+                    currency: "EUR"
+                    date: "2025-01-14T21:32:42.324Z"
+                passthrough:
+                  summary: EUR input returned unchanged
+                  value:
+                    marketId: 100
+                    selectionId: 200
+                    odds: 1.5
+                    stake: 50.00
+                    currency: "EUR"
+                    date: "2025-01-14T10:00:00Z"
+        '400':
+          description: |
+            The request is invalid. Possible causes:
+            - Malformed JSON or missing required fields (`MALFORMED_BODY`).
+            - `stake` is zero or negative (`INVALID_REQUEST`).
+            - `currency` is empty or blank (`INVALID_REQUEST`).
+            - `date` is in the future relative to UTC today (`INVALID_REQUEST`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                invalid-trade:
+                  summary: Validation failure
+                  value:
+                    code: "INVALID_REQUEST"
+                    message: "Invalid trade request"
+                malformed-json:
+                  summary: Unparseable JSON body
+                  value:
+                    code: "MALFORMED_BODY"
+                    message: "Object expected in field 'marketId'"
+        '415':
+          description: |
+            Request body is not `application/json`.
+        '500':
+          description: |
+            The server could not complete the currency conversion. Possible causes:
+            - All FX rate providers are unavailable (`RATE_UNAVAILABLE`).
+            - No exchange rate found for the requested currency pair and date (`RATE_UNAVAILABLE`).
+            - An upstream provider returned malformed data (`RATE_UNAVAILABLE`).
+            - Unexpected internal failure (`INTERNAL_ERROR`).
+
+            Clients should retry with exponential backoff for transient provider failures.
+            Persistent 500s for a specific currency may indicate an unsupported currency pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                provider-failure:
+                  summary: FX providers unavailable
+                  value:
+                    code: "RATE_UNAVAILABLE"
+                    message: "Unable to convert stake to EUR"
+                internal:
+                  summary: Unexpected server error
+                  value:
+                    code: "INTERNAL_ERROR"
+                    message: "Internal server error"
+
+components:
+  schemas:
+    TradeRequest:
+      type: object
+      required:
+        - marketId
+        - selectionId
+        - odds
+        - stake
+        - currency
+        - date
+      properties:
+        marketId:
+          type: integer
+          format: int64
+          description: Market identifier.
+          example: 123456
+        selectionId:
+          type: integer
+          format: int64
+          description: Selection identifier.
+          example: 987654
+        odds:
+          type: number
+          description: Decimal odds for the trade.
+          example: 2.2
+        stake:
+          type: number
+          description: Stake amount in the source currency. Must be greater than zero.
+          minimum: 0
+          exclusiveMinimum: true
+          example: 253.67
+        currency:
+          type: string
+          description: |
+            ISO 4217 currency code of the stake (e.g., `USD`, `GBP`, `CZK`).
+            Case-insensitive — normalized to uppercase internally.
+            Must not be empty or blank.
+          example: "USD"
+        date:
+          type: string
+          format: date-time
+          description: |
+            ISO-8601 instant (UTC recommended, e.g., `2025-01-14T21:32:42.324Z`).
+            Must not be in the future. Weekend dates are internally adjusted
+            to the preceding Friday for FX rate lookup.
+          example: "2025-01-14T21:32:42.324Z"
+
+    TradeResponse:
+      type: object
+      required:
+        - marketId
+        - selectionId
+        - odds
+        - stake
+        - currency
+        - date
+      properties:
+        marketId:
+          type: integer
+          format: int64
+          description: Echoed from request.
+          example: 123456
+        selectionId:
+          type: integer
+          format: int64
+          description: Echoed from request.
+          example: 987654
+        odds:
+          type: number
+          description: Echoed from request.
+          example: 2.2
+        stake:
+          type: number
+          description: |
+            Converted stake in EUR, rounded to 2 decimal places using HALF_UP rounding.
+          example: 202.94
+        currency:
+          type: string
+          description: Always `EUR`.
+          enum:
+            - EUR
+          example: "EUR"
+        date:
+          type: string
+          format: date-time
+          description: Echoed from request (original value, not the adjusted business day).
+          example: "2025-01-14T21:32:42.324Z"
+
+    ApiError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable error code. Clients should switch on this value
+            for programmatic error handling.
+          enum:
+            - MALFORMED_BODY
+            - INVALID_REQUEST
+            - RATE_UNAVAILABLE
+            - INTERNAL_ERROR
+          example: "INVALID_REQUEST"
+        message:
+          type: string
+          description: Human-readable error description. May change between versions — do not parse programmatically.
+          example: "Invalid trade request"
